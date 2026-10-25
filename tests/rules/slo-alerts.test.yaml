@@ -1,0 +1,134 @@
+# Prometheus rule unit tests (promtool test rules). Run with ./scripts/test-rules.sh
+# Each test replays synthetic series every 15s (the probe interval) and asserts which alerts fire.
+rule_files:
+  - slo-rules.json
+# promtool evaluates every group at this interval (it ignores per-group `interval`), so it must
+# match the fastest group: the 15s latency-events recording.
+evaluation_interval: 15s
+
+tests:
+  # Healthy frontend for an hour: no burn-rate alert may fire.
+  - interval: 15s
+    input_series:
+      - series: 'probe_success{job="guestbook-frontend-probe", instance="http://frontend.guestbook.svc.cluster.local/"}'
+        values: '1x240'
+      - series: 'probe_duration_seconds{job="guestbook-frontend-probe", instance="http://frontend.guestbook.svc.cluster.local/"}'
+        values: '0.01x240'
+      - series: 'redis_master_link_up{namespace="guestbook", pod="redis-replica-0"}'
+        values: '1x240'
+    alert_rule_test:
+      - { eval_time: 60m, alertname: GuestbookAvailabilityErrorBudgetBurnFast, exp_alerts: [] }
+      - { eval_time: 60m, alertname: GuestbookAvailabilityErrorBudgetBurnSlow, exp_alerts: [] }
+      - { eval_time: 60m, alertname: GuestbookLatencyErrorBudgetBurnFast, exp_alerts: [] }
+      - { eval_time: 60m, alertname: GuestbookSloProbeMissing, exp_alerts: [] }
+      - { eval_time: 60m, alertname: GuestbookRedisReplicationDown, exp_alerts: [] }
+    promql_expr_test:
+      - expr: slo:error_budget_remaining:ratio{slo="guestbook-availability"}
+        eval_time: 60m
+        exp_samples:
+          - labels: 'slo:error_budget_remaining:ratio{slo="guestbook-availability"}'
+            value: 1
+
+  # 20 minutes healthy, then the frontend is down (every probe fails).
+  - interval: 15s
+    input_series:
+      - series: 'probe_success{job="guestbook-frontend-probe", instance="http://frontend.guestbook.svc.cluster.local/"}'
+        values: '1x79 0x80'
+      - series: 'probe_duration_seconds{job="guestbook-frontend-probe", instance="http://frontend.guestbook.svc.cluster.local/"}'
+        values: '0.01x160'
+    alert_rule_test:
+      # One minute into the outage: burning, but `for: 2m` has not elapsed yet - no page.
+      - { eval_time: 21m, alertname: GuestbookAvailabilityErrorBudgetBurnFast, exp_alerts: [] }
+      # Ten minutes in: both fast-burn windows page; slow burn needs `for: 15m` so stays quiet.
+      - eval_time: 30m
+        alertname: GuestbookAvailabilityErrorBudgetBurnFast
+        exp_alerts:
+          - exp_labels: { severity: critical, slo: guestbook-availability, long_window: 1h }
+            exp_annotations:
+              summary: "guestbook-availability: error budget burning at 14.4x over 1h"
+              description: "99.5% of frontend probes succeed (HTTP 2xx). Error ratio is above 0.072 over both 1h and 5m; at this pace the 30d budget runs out in 2.08333 days."
+          - exp_labels: { severity: critical, slo: guestbook-availability, long_window: 6h }
+            exp_annotations:
+              summary: "guestbook-availability: error budget burning at 6x over 6h"
+              description: "99.5% of frontend probes succeed (HTTP 2xx). Error ratio is above 0.03 over both 6h and 30m; at this pace the 30d budget runs out in 5 days."
+      - { eval_time: 30m, alertname: GuestbookAvailabilityErrorBudgetBurnSlow, exp_alerts: [] }
+    promql_expr_test:
+      # Probes 0..30m = 121 samples, 41 of them failed (20m..30m inclusive) -> 41/121 = 0.34 over the 30d window (data so far).
+      - expr: round(slo:sli_error:ratio_rate30d{slo="guestbook-availability"}, 0.01)
+        eval_time: 30m
+        exp_samples:
+          - labels: '{slo="guestbook-availability"}'
+            value: 0.34
+      # ...but the budget is measured against a full 30 days: 41 failed probes of the 864 allowed
+      # (0.5% of 172,800 probes) -> 1 - 41/864 = 0.9525 left.
+      - expr: round(slo:error_budget_remaining:ratio{slo="guestbook-availability"}, 0.0001)
+        eval_time: 30m
+        exp_samples:
+          - labels: '{slo="guestbook-availability"}'
+            value: 0.9525
+
+  # Regression (found in review): every other probe fails. Both SLIs must count all failures; a
+  # latency rule evaluated slower than the probe interval would only see the successes.
+  - interval: 15s
+    input_series:
+      - series: 'probe_success{job="guestbook-frontend-probe", instance="http://frontend.guestbook.svc.cluster.local/"}'
+        values: '1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1'
+      - series: 'probe_duration_seconds{job="guestbook-frontend-probe", instance="http://frontend.guestbook.svc.cluster.local/"}'
+        values: '0.01x50'
+    promql_expr_test:
+      - expr: round(slo:sli_error:ratio_rate5m{slo="guestbook-availability"}, 0.1)
+        eval_time: 12m
+        exp_samples: [{labels: '{slo="guestbook-availability"}', value: 0.5}]
+      - expr: round(slo:sli_error:ratio_rate5m{slo="guestbook-latency"}, 0.1)
+        eval_time: 12m
+        exp_samples: [{labels: '{slo="guestbook-latency"}', value: 0.5}]
+
+  # Every probe succeeds but takes 500 ms: availability is fine, the latency SLO pages.
+  - interval: 15s
+    input_series:
+      - series: 'probe_success{job="guestbook-frontend-probe", instance="http://frontend.guestbook.svc.cluster.local/"}'
+        values: '1x80'
+      - series: 'probe_duration_seconds{job="guestbook-frontend-probe", instance="http://frontend.guestbook.svc.cluster.local/"}'
+        values: '0.5x80'
+    alert_rule_test:
+      - { eval_time: 15m, alertname: GuestbookAvailabilityErrorBudgetBurnFast, exp_alerts: [] }
+      - eval_time: 15m
+        alertname: GuestbookLatencyErrorBudgetBurnFast
+        exp_alerts:
+          - exp_labels: { severity: critical, slo: guestbook-latency, long_window: 1h }
+            exp_annotations:
+              summary: "guestbook-latency: error budget burning at 14.4x over 1h"
+              description: "99% of frontend probes succeed in under 300 ms. Error ratio is above 0.144 over both 1h and 5m; at this pace the 30d budget runs out in 2.08333 days."
+          - exp_labels: { severity: critical, slo: guestbook-latency, long_window: 6h }
+            exp_annotations:
+              summary: "guestbook-latency: error budget burning at 6x over 6h"
+              description: "99% of frontend probes succeed in under 300 ms. Error ratio is above 0.06 over both 6h and 30m; at this pace the 30d budget runs out in 5 days."
+
+  # Replica loses its leader: page after 2 minutes.
+  - interval: 15s
+    input_series:
+      - series: 'redis_master_link_up{namespace="guestbook", pod="redis-replica-0"}'
+        values: '1x20 0x40'
+    alert_rule_test:
+      - { eval_time: 6m, alertname: GuestbookRedisReplicationDown, exp_alerts: [] }
+      - eval_time: 9m
+        alertname: GuestbookRedisReplicationDown
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations:
+              summary: "Redis replica is not syncing from the leader"
+              description: "The frontend reads from the replica, so new guestbook messages will not appear. Check `kubectl -n guestbook logs deploy/<redis-replica> -c replica` (e.g. RDB format/version mismatch)."
+
+  # No probe data at all: the SLO alerts are blind, so this must fire.
+  - interval: 15s
+    input_series:
+      - series: 'up{job="something-else"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: GuestbookSloProbeMissing
+        exp_alerts:
+          - exp_labels: { severity: warning, job: guestbook-frontend-probe }
+            exp_annotations:
+              summary: "No blackbox probe data for the Guestbook frontend"
+              description: "SLO alerts are blind while this fires. Check the blackbox-exporter pod and the Probe resource."

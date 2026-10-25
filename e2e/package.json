@@ -1,0 +1,13 @@
+{
+  "name": "guestbook-monitoring-e2e",
+  "private": true,
+  "description": "Optional browser end-to-end tests (Playwright + Chromium) against a deployed stack",
+  "scripts": {
+    "test": "playwright test",
+    "test:drill": "DRILL=1 playwright test --grep @drill"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1"
+  },
+  "engines": { "node": ">=22" }
+}

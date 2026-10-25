@@ -1,0 +1,16 @@
+name: guestbook-monitoring
+runtime: nodejs
+description: Kubernetes Guestbook (Pulumi example) extended with Prometheus + Grafana monitoring
+config:
+  grafanaServiceType:
+    type: string
+    description: Service type for Grafana - LoadBalancer (cloud clusters) or NodePort (minikube/kind)
+    default: LoadBalancer
+  frontendServiceType:
+    type: string
+    description: Service type for the Guestbook frontend - LoadBalancer or ClusterIP
+    default: LoadBalancer
+  trafficGenerator:
+    type: boolean
+    description: Run a tiny in-cluster client that sends ~2 requests/second to the frontend, so dashboards have data
+    default: false
