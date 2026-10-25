@@ -1,0 +1,8 @@
+guestbook-monitoring
+Copyright 2026 Idowu Peter Ayeni
+
+This project includes code adapted from the Pulumi examples repository
+(https://github.com/pulumi/examples, kubernetes-ts-guestbook), which is
+licensed under the Apache License, Version 2.0. guestbook.ts is derived from
+that example and has been modified (separate namespace, exporter sidecars,
+metrics Services, pinned Redis version, optional traffic generator).

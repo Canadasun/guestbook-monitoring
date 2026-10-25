@@ -318,3 +318,7 @@ Helm deliberately never deletes CRDs, so the Prometheus Operator CRDs stay after
 ```bash
 kubectl get crd -o name | grep monitoring.coreos.com | xargs kubectl delete
 ```
+
+## License
+
+Apache License 2.0, see [LICENSE](LICENSE). `guestbook.ts` is adapted from the Apache-2.0 [Pulumi Kubernetes Guestbook example](https://github.com/pulumi/examples/tree/master/kubernetes-ts-guestbook); see [NOTICE](NOTICE).
